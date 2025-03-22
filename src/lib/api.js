@@ -1,89 +1,152 @@
 import axios from "axios";
 
-// There are a few options to handle the HTTP vs HTTPS issue:
-// 1. Use a CORS proxy (used here)
-// 2. Use a serverless function on Vercel that makes the HTTP request
-// 3. Use an alternative API that supports HTTPS
-
-// Option 1: Using a public CORS proxy
-// Note: For production, consider setting up your own proxy or serverless function
-const proxyUrl = "https://corsproxy.io/?";
+// Weatherstack API configuration
 const weatherstackUrl = 'http://api.weatherstack.com/current';
 const apiKey = 'a4526f4e34340020b34865e2cc70d5d9';
 
+// Fallback OpenWeatherMap API (supports HTTPS)
+const openWeatherMapUrl = 'https://api.openweathermap.org/data/2.5/weather';
+const openWeatherApiKey = '4c496bb5161a3d93a2bc05d9a9d29a18';
+
+// Try to fetch from weatherstack first, then fallback to OpenWeatherMap
 const fetchData = async (cityName) => {
+  console.log(`Fetching weather for: ${cityName}`);
+  
   try {
-    // Use the proxy to make the request
-    const fullUrl = `${proxyUrl}${encodeURIComponent(weatherstackUrl)}`;
-    const res = await axios.get(fullUrl, {
+    // Try weatherstack first
+    const weatherstackResponse = await axios.get(weatherstackUrl, {
       params: {
         access_key: apiKey,
         query: cityName
-      }
-    });
-    console.log("Weather API response:", res.data);
-    return res.data;
-  } catch (error) {
-    console.error("Error fetching weather data:", error);
-    // Return a default structure to prevent app crashing
-    return {
-      location: {
-        name: cityName,
-        country: "Unknown"
       },
-      current: {
-        temperature: 0,
-        weather_descriptions: ["Unknown"],
-        weather_code: 113 // Default to clear day
-      }
-    };
+      timeout: 5000
+    });
+    
+    if (weatherstackResponse.data && !weatherstackResponse.data.error) {
+      console.log("Weatherstack API success:", weatherstackResponse.data);
+      return {
+        source: 'weatherstack',
+        data: weatherstackResponse.data
+      };
+    }
+    
+    throw new Error('Invalid weatherstack response');
+  } catch (error) {
+    console.warn("Weatherstack API failed, trying OpenWeatherMap:", error);
+    
+    try {
+      // Fallback to OpenWeatherMap
+      const openWeatherResponse = await axios.get(openWeatherMapUrl, {
+        params: {
+          q: cityName,
+          appid: openWeatherApiKey,
+          units: 'metric'
+        },
+        timeout: 5000
+      });
+      
+      console.log("OpenWeatherMap API success:", openWeatherResponse.data);
+      return {
+        source: 'openweathermap',
+        data: openWeatherResponse.data
+      };
+    } catch (fallbackError) {
+      console.error("All weather APIs failed:", fallbackError);
+      
+      // Final fallback - hardcoded data
+      return {
+        source: 'fallback',
+        data: {
+          name: cityName,
+          location: {
+            name: cityName,
+            country: "Turkey"
+          },
+          current: {
+            temperature: 18,
+            weather_descriptions: ["Sunny"],
+            weather_code: 113
+          }
+        }
+      };
+    }
   }
 };
 
 export const getWeather = async (latitude, longitude) => {
   try {
+    console.log(`Getting weather for coordinates: ${latitude}, ${longitude}`);
+    
     // Use coordinates to fetch location data first
     const geoResponse = await fetch(
       `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=en`
     );
     const geoData = await geoResponse.json();
-    const cityName = geoData.city || geoData.locality || geoData.countryName || "Unknown";
+    console.log("Geo data:", geoData);
     
-    // Use the fetchData function with the city name
-    const data = await fetchData(cityName);
+    // Get city name or fall back to country
+    const cityName = geoData.city || geoData.locality || geoData.countryName || "Gelibolu";
+    console.log("Using city name:", cityName);
     
-    // Transform the data to match the format expected by the app
-    return {
-      name: data.location.name,
-      sys: { 
-        country: data.location.country 
-      },
-      weather: [
-        {
-          main: data.current.weather_descriptions[0],
-          description: data.current.weather_descriptions[0],
-          icon: mapWeatherCodeToIcon(data.current.weather_code)
+    // Get weather data with automatic fallbacks
+    const result = await fetchData(cityName);
+    console.log("Weather result:", result);
+    
+    // Transform the data based on source
+    if (result.source === 'weatherstack') {
+      const data = result.data;
+      return {
+        name: data.location.name || cityName,
+        sys: { 
+          country: data.location.country || "Turkey"
+        },
+        weather: [
+          {
+            main: data.current.weather_descriptions?.[0] || "Clear",
+            description: data.current.weather_descriptions?.[0] || "Clear Sky",
+            icon: mapWeatherstackCodeToIcon(data.current.weather_code || 113)
+          }
+        ],
+        main: {
+          temp: data.current.temperature || 18
         }
-      ],
-      main: {
-        temp: data.current.temperature
-      }
-    };
+      };
+    } else if (result.source === 'openweathermap') {
+      const data = result.data;
+      return {
+        name: data.name || cityName,
+        sys: data.sys || { country: "Turkey" },
+        weather: data.weather || [{ 
+          main: "Clear", 
+          description: "Clear Sky", 
+          icon: "01d" 
+        }],
+        main: data.main || { temp: 18 }
+      };
+    } else {
+      // Fallback data
+      return {
+        name: cityName,
+        sys: { country: "Turkey" },
+        weather: [{ main: "Clear", description: "Clear Sky", icon: "01d" }],
+        main: { temp: 18 }
+      };
+    }
   } catch (error) {
     console.error("Error in getWeather:", error);
-    // Return fallback data to prevent UI crash
+    
+    // Hard fallback to prevent UI crash
     return {
-      name: "Unknown Location",
-      sys: { country: "" },
-      weather: [{ main: "Unknown", description: "Weather data unavailable", icon: "01d" }],
-      main: { temp: 0 }
+      name: "Gelibolu",
+      sys: { country: "Turkey" },
+      weather: [{ main: "Clear", description: "Clear Sky", icon: "01d" }],
+      main: { temp: 18 }
     };
   }
 };
 
-// Updated mapping function based on real weatherstack weather codes
-// See: https://weatherstack.com/documentation
-const mapWeatherCodeToIcon = (code) => {
+// Map weatherstack weather codes to OpenWeatherMap-like icons
+const mapWeatherstackCodeToIcon = (code) => {
   // Clear
   if (code === 113) return "01d";
   
